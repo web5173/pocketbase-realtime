@@ -1,0 +1,19 @@
+[package]
+name = "pocketbase-realtime"
+version = "0.1.0"
+edition = "2021"
+description = "Lightweight anonymous SSE realtime subscription client for PocketBase."
+license = "MIT"
+keywords = ["pocketbase", "sse", "eventsource", "realtime", "subscription"]
+categories = ["web-programming::http-client", "asynchronous"]
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+reqwest = { version = "0.12", features = ["stream", "json"] }
+reqwest-eventsource = "0.6"
+futures-util = "0.3"
+serde_json = "1"
+tokio-util = { version = "0.7", features = ["rt"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
