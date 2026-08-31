@@ -1,6 +1,6 @@
 # pocketbase-realtime
 
-A lightweight anonymous SSE realtime subscription client for [PocketBase](https://pocketbase.io).
+A lightweight anonymous SSE realtime subscription client for PocketBase.
 
 ## Installation
 
