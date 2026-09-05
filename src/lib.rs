@@ -13,6 +13,9 @@ use tokio_util::sync::CancellationToken;
 /// Max time to establish the connection and wait for `PB_CONNECT`.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Max time for a single subscription submission/clear POST.
+const SUBMIT_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Delay between reconnection attempts after a disconnect.
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 
@@ -176,12 +179,13 @@ async fn run_once(inner: &Arc<Inner>) {
         _ => return, // handshake failed or timed out → reconnect
     };
 
-    // 订阅上报成功后才视为已连接，避免“已连接却无订阅”的静默失效
+    // 版本须在订阅上报 POST 之前采样：POST 飞行期间发生的订阅变更不会被吞掉，
+    // 回到循环顶会按版本差量补发（含“取消全部订阅”→ 空订阅 flush）。
+    let mut last_version = inner.version.load(Ordering::Relaxed);
     if send_subscriptions(inner, &client_id).await.is_err() {
         return;
     }
     inner.connected.send_replace(true);
-    let mut last_version = inner.version.load(Ordering::Relaxed);
 
     loop {
         // If subscriptions changed → re-submit (or disconnect if empty)
@@ -263,14 +267,23 @@ async fn send_subscriptions(inner: &Inner, client_id: &str) -> Result<(), String
         .client
         .post(&inner.realtime_url)
         .json(&body)
+        .timeout(SUBMIT_TIMEOUT)
         .send()
         .await
-        .map_err(|e| format!("subscription POST failed: {e}"))?;
+        .map_err(|e| format!("subscription POST failed: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("subscription POST rejected: {e}"))?;
     Ok(())
 }
 
 /// Clear all server-side subscriptions for this client (graceful teardown).
 async fn flush_subscriptions(inner: &Inner, client_id: &str) {
     let body = json!({ "clientId": client_id, "subscriptions": [] });
-    let _ = inner.client.post(&inner.realtime_url).json(&body).send().await;
+    let _ = inner
+        .client
+        .post(&inner.realtime_url)
+        .json(&body)
+        .timeout(SUBMIT_TIMEOUT)
+        .send()
+        .await;
 }
