@@ -39,7 +39,7 @@ struct Inner {
     /// Subscription version: bumped on every change; the background task uses it to decide whether to re-submit.
     version: AtomicU64,
     notify: Notify,
-    tx: mpsc::UnboundedSender<RealtimeMessage>,
+    tx: Mutex<Option<mpsc::UnboundedSender<RealtimeMessage>>>,
     rx: Mutex<Option<mpsc::UnboundedReceiver<RealtimeMessage>>>,
     cancel: CancellationToken,
     connected: watch::Sender<bool>,
@@ -61,7 +61,7 @@ impl RealtimeClient {
             subs: Mutex::new(HashSet::new()),
             version: AtomicU64::new(0),
             notify: Notify::new(),
-            tx,
+            tx: Mutex::new(Some(tx)),
             rx: Mutex::new(Some(rx)),
             cancel: CancellationToken::new(),
             connected,
@@ -127,9 +127,10 @@ impl RealtimeClient {
         self.inner.connected.subscribe()
     }
 
-    /// Stop the background task.
+    /// Stop the background task and close the message channel, so `messages().recv()` returns `None`.
     pub fn close(&self) {
         self.inner.cancel.cancel();
+        self.inner.tx.lock().unwrap().take();
     }
 }
 
@@ -172,9 +173,12 @@ async fn run_once(inner: &Arc<Inner>) {
         _ => return, // handshake failed or timed out → reconnect
     };
 
+    // 订阅上报成功后才视为已连接，避免“已连接却无订阅”的静默失效
+    if send_subscriptions(inner, &client_id).await.is_err() {
+        return;
+    }
     inner.connected.send_replace(true);
     let mut last_version = inner.version.load(Ordering::Relaxed);
-    send_subscriptions(inner, &client_id).await;
 
     loop {
         // If subscriptions changed → re-submit (or disconnect if empty)
@@ -186,7 +190,9 @@ async fn run_once(inner: &Arc<Inner>) {
                 flush_subscriptions(inner, &client_id).await;
                 break;
             }
-            send_subscriptions(inner, &client_id).await;
+            if send_subscriptions(inner, &client_id).await.is_err() {
+                break; // 上报失败 → 视为连接失败，重连重试
+            }
             last_version = cur_version;
         }
 
@@ -195,10 +201,12 @@ async fn run_once(inner: &Arc<Inner>) {
                 match ev {
                     Some(Ok(Event::Message(msg))) => {
                         if msg.event != "PB_CONNECT" {
-                            let _ = inner.tx.send(RealtimeMessage {
-                                topic: msg.event,
-                                data: msg.data,
-                            });
+                            if let Some(tx) = inner.tx.lock().unwrap().as_ref() {
+                                let _ = tx.send(RealtimeMessage {
+                                    topic: msg.event,
+                                    data: msg.data,
+                                });
+                            }
                         }
                     }
                     Some(Ok(Event::Open)) => {}
@@ -242,13 +250,20 @@ async fn wait_pb_connect(es: &mut EventSource) -> Option<String> {
 }
 
 /// Submit the current set of subscriptions to the server.
-async fn send_subscriptions(inner: &Inner, client_id: &str) {
+async fn send_subscriptions(inner: &Inner, client_id: &str) -> Result<(), String> {
     let subs: Vec<String> = inner.subs.lock().unwrap().iter().cloned().collect();
     if subs.is_empty() {
-        return;
+        return Ok(());
     }
     let body = json!({ "clientId": client_id, "subscriptions": subs });
-    let _ = inner.client.post(&inner.realtime_url).json(&body).send().await;
+    inner
+        .client
+        .post(&inner.realtime_url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("subscription POST failed: {e}"))?;
+    Ok(())
 }
 
 /// Clear all server-side subscriptions for this client (graceful teardown).
