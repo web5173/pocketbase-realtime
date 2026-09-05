@@ -179,8 +179,8 @@ async fn run_once(inner: &Arc<Inner>) {
         _ => return, // handshake failed or timed out → reconnect
     };
 
-    // 版本须在订阅上报 POST 之前采样：POST 飞行期间发生的订阅变更不会被吞掉，
-    // 回到循环顶会按版本差量补发（含“取消全部订阅”→ 空订阅 flush）。
+    // Sample the version before the subscription POST so in-flight changes are
+    // re-detected at the loop top (including unsubscribe-all → flush).
     let mut last_version = inner.version.load(Ordering::Relaxed);
     if send_subscriptions(inner, &client_id).await.is_err() {
         return;
@@ -198,7 +198,7 @@ async fn run_once(inner: &Arc<Inner>) {
                 break;
             }
             if send_subscriptions(inner, &client_id).await.is_err() {
-                break; // 上报失败 → 视为连接失败，重连重试
+                break; // submission failed → treat as disconnected and retry reconnect
             }
             last_version = cur_version;
         }
