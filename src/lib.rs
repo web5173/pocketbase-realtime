@@ -164,6 +164,9 @@ async fn run(inner: Arc<Inner>) {
 /// One connection cycle: open SSE → wait for `PB_CONNECT` → re-submit subscriptions →
 /// keep reading until disconnect or cancel.
 async fn run_once(inner: &Arc<Inner>) {
+    if inner.subs.lock().unwrap().is_empty() {
+        return;
+    }
     // `EventSource::get` constructs synchronously; the connection is established on the
     // first poll, and connection errors surface via `next()`
     let mut es = EventSource::get(&inner.realtime_url);
