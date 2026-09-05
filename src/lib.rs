@@ -121,6 +121,12 @@ impl RealtimeClient {
         *self.inner.connected.borrow()
     }
 
+    /// Subscribe to connection-state changes (`true` = established, `false` = disconnected).
+    /// The receiver yields the current value immediately and then on every change.
+    pub fn connection_state(&self) -> watch::Receiver<bool> {
+        self.inner.connected.subscribe()
+    }
+
     /// Stop the background task.
     pub fn close(&self) {
         self.inner.cancel.cancel();
