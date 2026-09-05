@@ -181,6 +181,9 @@ async fn run_once(inner: &Arc<Inner>) {
         let cur_version = inner.version.load(Ordering::Relaxed);
         if cur_version != last_version {
             if inner.subs.lock().unwrap().is_empty() {
+                // Graceful shutdown: clear server-side subscriptions before closing,
+                // so a dead connection is not selected by single-delivery brokers.
+                flush_subscriptions(inner, &client_id).await;
                 break;
             }
             send_subscriptions(inner, &client_id).await;
@@ -205,7 +208,11 @@ async fn run_once(inner: &Arc<Inner>) {
             // Wake-up signal only; actual (re)submission is driven by the version check
             // at the top of the loop, so no notification is lost to select contention.
             _ = inner.notify.notified() => {}
-            _ = inner.cancel.cancelled() => break,
+            _ = inner.cancel.cancelled() => {
+                // Cancelled (close): clear server-side subscriptions before closing.
+                flush_subscriptions(inner, &client_id).await;
+                break;
+            }
         }
     }
 
@@ -241,5 +248,11 @@ async fn send_subscriptions(inner: &Inner, client_id: &str) {
         return;
     }
     let body = json!({ "clientId": client_id, "subscriptions": subs });
+    let _ = inner.client.post(&inner.realtime_url).json(&body).send().await;
+}
+
+/// Clear all server-side subscriptions for this client (graceful teardown).
+async fn flush_subscriptions(inner: &Inner, client_id: &str) {
+    let body = json!({ "clientId": client_id, "subscriptions": [] });
     let _ = inner.client.post(&inner.realtime_url).json(&body).send().await;
 }
